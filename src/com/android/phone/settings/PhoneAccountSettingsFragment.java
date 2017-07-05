@@ -13,6 +13,7 @@ import android.preference.ListPreference;
 import android.preference.Preference;
 import android.preference.PreferenceCategory;
 import android.preference.PreferenceFragment;
+import android.provider.Settings;
 import android.telecom.PhoneAccount;
 import android.telecom.PhoneAccountHandle;
 import android.telecom.TelecomManager;
@@ -22,7 +23,10 @@ import android.telephony.TelephonyManager;
 import android.text.TextUtils;
 import android.util.Log;
 
+import com.android.internal.telephony.CallManager;
 import com.android.internal.telephony.Phone;
+import com.android.internal.telephony.PhoneConstants;
+import com.android.phone.Constants;
 import com.android.phone.PhoneUtils;
 import com.android.phone.R;
 import com.android.phone.SubscriptionInfoHelper;
@@ -33,6 +37,7 @@ import com.android.services.telephony.sip.SipUtil;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
 
@@ -45,6 +50,9 @@ public class PhoneAccountSettingsFragment extends PreferenceFragment
 
     private static final String DEFAULT_OUTGOING_ACCOUNT_KEY = "default_outgoing_account";
     private static final String ALL_CALLING_ACCOUNTS_KEY = "phone_account_all_calling_accounts";
+
+    private static final String INCALL_CATEGORY_KEY = "incall_screen_category_key";
+    private static final String SHOW_SSN_PREF_KEY = "button_show_ssn_key";
 
     private static final String SIP_SETTINGS_CATEGORY_PREF_KEY =
             "phone_accounts_sip_settings_category_key";
@@ -67,6 +75,7 @@ public class PhoneAccountSettingsFragment extends PreferenceFragment
     private TelecomManager mTelecomManager;
     private TelephonyManager mTelephonyManager;
     private SubscriptionManager mSubscriptionManager;
+    private boolean mHasGsmPhone;
 
     private PreferenceCategory mAccountList;
 
@@ -83,6 +92,14 @@ public class PhoneAccountSettingsFragment extends PreferenceFragment
         mTelecomManager = TelecomManager.from(getActivity());
         mTelephonyManager = TelephonyManager.from(getActivity());
         mSubscriptionManager = SubscriptionManager.from(getActivity());
+
+        mHasGsmPhone = false;
+        for (Phone phone : CallManager.getInstance().getAllPhones()) {
+            if (phone.getPhoneType() == PhoneConstants.PHONE_TYPE_GSM) {
+                mHasGsmPhone = true;
+                break;
+            }
+        }
     }
 
     @Override
@@ -151,7 +168,8 @@ public class PhoneAccountSettingsFragment extends PreferenceFragment
             getPreferenceScreen().removePreference(mAccountList);
         }
 
-        if (isPrimaryUser() && SipUtil.isVoipSupported(getActivity())) {
+        if (isPrimaryUser() && SipUtil.isVoipSupported(getActivity()) && getResources().getBoolean(
+                R.bool.sip_settings_on)) {
             mSipPreferences = new SipPreferences(getActivity());
 
             mUseSipCalling = (ListPreference)
@@ -182,6 +200,16 @@ public class PhoneAccountSettingsFragment extends PreferenceFragment
         } else {
             getPreferenceScreen().removePreference(
                     getPreferenceScreen().findPreference(SIP_SETTINGS_CATEGORY_PREF_KEY));
+        }
+
+        if (!mHasGsmPhone) {
+            PreferenceCategory incallSettings = (PreferenceCategory)
+                    getPreferenceScreen().findPreference(INCALL_CATEGORY_KEY);
+
+            incallSettings.removePreference(incallSettings.findPreference(SHOW_SSN_PREF_KEY));
+            if (incallSettings.getPreferenceCount() == 0) {
+                getPreferenceScreen().removePreference(incallSettings);
+            }
         }
     }
 
@@ -273,7 +301,7 @@ public class PhoneAccountSettingsFragment extends PreferenceFragment
 
     private void initAccountList(List<PhoneAccountHandle> enabledAccounts) {
 
-        boolean isMultiSimDevice = mTelephonyManager.isMultiSimEnabled();
+        final boolean isMultiSimDevice = mTelephonyManager.isMultiSimEnabled();
 
         // On a single-SIM device, do not list any accounts if the only account is the SIM-based
         // one. This is because on single-SIM devices, we do not expose SIM settings through the
@@ -286,10 +314,18 @@ public class PhoneAccountSettingsFragment extends PreferenceFragment
 
         // Obtain the list of phone accounts.
         List<PhoneAccount> accounts = new ArrayList<>();
+        final HashMap<PhoneAccount, SubscriptionInfo> accountToSubInfo = new HashMap<>();
         for (PhoneAccountHandle handle : enabledAccounts) {
             PhoneAccount account = mTelecomManager.getPhoneAccount(handle);
             if (account != null) {
                 accounts.add(account);
+                if (account.hasCapabilities(PhoneAccount.CAPABILITY_SIM_SUBSCRIPTION)) {
+                    SubscriptionInfo subInfo = mSubscriptionManager.getActiveSubscriptionInfo(
+                            mTelephonyManager.getSubIdForPhoneAccount(account));
+                    if (subInfo != null) {
+                        accountToSubInfo.put(account, subInfo);
+                    }
+                }
             }
         }
 
@@ -304,6 +340,17 @@ public class PhoneAccountSettingsFragment extends PreferenceFragment
                 boolean isSim2 = account2.hasCapabilities(PhoneAccount.CAPABILITY_SIM_SUBSCRIPTION);
                 if (isSim1 != isSim2) {
                     retval = isSim1 ? -1 : 1;
+                } else if (isMultiSimDevice) {
+                    // Order SIM accounts by SIM slot index
+                    SubscriptionInfo info1 = accountToSubInfo.get(account1);
+                    SubscriptionInfo info2 = accountToSubInfo.get(account2);
+                    if (info1 == null && info2 != null) {
+                        retval = 1;
+                    } else if (info1 != null && info2 == null) {
+                        retval = -1;
+                    } else if (info1 != null && info2 != null) {
+                        retval = Integer.compare(info1.getSimSlotIndex(), info2.getSimSlotIndex());
+                    }
                 }
 
                 int subId1 = mTelephonyManager.getSubIdForPhoneAccount(account1);
@@ -350,9 +397,7 @@ public class PhoneAccountSettingsFragment extends PreferenceFragment
                 // if we are on a multi-SIM device. For single-SIM devices, the settings are
                 // more spread out so there is no good single place to take the user, so we don't.
                 if (isMultiSimDevice) {
-                    SubscriptionInfo subInfo = mSubscriptionManager.getActiveSubscriptionInfo(
-                            mTelephonyManager.getSubIdForPhoneAccount(account));
-
+                    SubscriptionInfo subInfo = accountToSubInfo.get(account);
                     if (subInfo != null) {
                         intent = new Intent(TelecomManager.ACTION_SHOW_CALL_SETTINGS);
                         intent.setFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP);

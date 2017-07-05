@@ -30,6 +30,7 @@
             android:order="1" />
 
         <PreferenceScreen
+            android:key="phone_account_all_calling_accounts"
             android:title="@string/phone_accounts_all_calling_accounts"
             android:summary="@string/phone_accounts_all_calling_accounts_summary"
             android:persistent="false"
@@ -69,6 +70,18 @@
             android:title="@string/sip_receive_calls"
             android:summary="@string/sip_receive_calls_summary"
             android:persistent="true"/>
+
+    </PreferenceCategory>
+
+    <PreferenceCategory
+        android:key="incall_screen_category_key"
+        android:title="@string/incall_screen_settings">
+
+        <SwitchPreference
+            android:key="button_show_ssn_key"
+            android:title="@string/show_ssn_label"
+            android:defaultValue="false"
+            android:summary="@string/show_ssn_summary" />
 
     </PreferenceCategory>
 
